@@ -99,8 +99,9 @@ Re-run `python seed_data.py` once pointed at the new database to seed it.
 
 ## Deployment
 
-- **Backend → Render/Railway**: `backend/render.yaml` is ready to import on
-  Render (installs deps, seeds the DB, starts `uvicorn` on `$PORT`). Set
+- **Backend → Render/Railway**: `render.yaml` (repo root, with `rootDir: backend`
+  so Render's Blueprint auto-detection finds it) is ready to import on Render
+  (installs deps, seeds the DB, starts `uvicorn` on `$PORT`). Set
   `ANTHROPIC_API_KEY` in the Render dashboard.
 - **Frontend → Netlify/Vercel**: `frontend/netlify.toml` and
   `frontend/vercel.json` are both present. Set `VITE_API_BASE` to your
