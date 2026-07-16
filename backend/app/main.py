@@ -31,14 +31,24 @@ app.add_middleware(
 )
 
 
-def _with_score(target: Target, metro_counts: dict) -> TargetWithScore:
-    scored = compute_score(target, metro_counts)
+def _with_score(
+    target: Target,
+    metro_counts: dict,
+    door_min: Optional[int] = None,
+    door_max: Optional[int] = None,
+) -> TargetWithScore:
+    scored = compute_score(target, metro_counts, door_min, door_max)
     base = TargetBase.model_validate(target).model_dump()
     return TargetWithScore(
         **base,
         acquisition_fit_score=scored["final_score"],
         score_components=scored["components"],
     )
+
+
+def _validate_door_range(door_min: Optional[int], door_max: Optional[int]) -> None:
+    if door_min is not None and door_max is not None and door_min >= door_max:
+        raise HTTPException(status_code=400, detail="door_min must be less than door_max")
 
 
 @app.get("/api/targets", response_model=list[TargetWithScore])
@@ -49,9 +59,13 @@ def list_targets(
     outreach_status: Optional[OutreachStatus] = None,
     min_score: Optional[int] = Query(None, ge=0, le=100),
     max_score: Optional[int] = Query(None, ge=0, le=100),
+    door_min: Optional[int] = Query(None, ge=0),
+    door_max: Optional[int] = Query(None, ge=0),
     sort_by: str = Query("acquisition_fit_score", pattern="^(acquisition_fit_score|estimated_door_count|google_rating|company_name|years_in_business)$"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
 ):
+    _validate_door_range(door_min, door_max)
+
     all_targets = db.query(Target).all()
     metro_counts = build_metro_counts(all_targets)
 
@@ -63,7 +77,7 @@ def list_targets(
     if outreach_status:
         filtered = [t for t in filtered if t.outreach_status == outreach_status]
 
-    scored = [_with_score(t, metro_counts) for t in filtered]
+    scored = [_with_score(t, metro_counts, door_min, door_max) for t in filtered]
 
     if min_score is not None:
         scored = [t for t in scored if t.acquisition_fit_score >= min_score]
@@ -77,12 +91,18 @@ def list_targets(
 
 
 @app.get("/api/targets/{target_id}", response_model=TargetWithScore)
-def get_target(target_id: int, db: Session = Depends(get_db)):
+def get_target(
+    target_id: int,
+    db: Session = Depends(get_db),
+    door_min: Optional[int] = Query(None, ge=0),
+    door_max: Optional[int] = Query(None, ge=0),
+):
+    _validate_door_range(door_min, door_max)
     target = db.query(Target).filter(Target.id == target_id).first()
     if not target:
         raise HTTPException(status_code=404, detail="Target not found")
     metro_counts = build_metro_counts(db.query(Target).all())
-    return _with_score(target, metro_counts)
+    return _with_score(target, metro_counts, door_min, door_max)
 
 
 @app.patch("/api/targets/{target_id}/outreach", response_model=TargetWithScore)
@@ -99,10 +119,17 @@ def update_outreach_status(target_id: int, update: OutreachUpdate, db: Session =
 
 
 @app.get("/api/stats", response_model=StatsResponse)
-def get_stats(db: Session = Depends(get_db)):
+def get_stats(
+    db: Session = Depends(get_db),
+    door_min: Optional[int] = Query(None, ge=0),
+    door_max: Optional[int] = Query(None, ge=0),
+):
+    _validate_door_range(door_min, door_max)
     all_targets = db.query(Target).all()
     metro_counts = build_metro_counts(all_targets)
-    scores = [compute_score(t, metro_counts)["final_score"] for t in all_targets]
+    scores = [
+        compute_score(t, metro_counts, door_min, door_max)["final_score"] for t in all_targets
+    ]
 
     by_confidence: dict[str, int] = {}
     by_outreach: dict[str, int] = {}

@@ -73,7 +73,7 @@ export default function TargetDetail() {
   return (
     <>
       <div className="detail-hero">
-        <Link to="/" className="back-link">
+        <Link to="/dashboard" className="back-link">
           ← Back to all targets
         </Link>
         <div className="metro-tag">

@@ -7,6 +7,8 @@ tool. Every number below is surfaced to the UI so a user can see exactly why a
 target scored the way it did.
 """
 
+from typing import Optional
+
 from . import config
 from .models import Target
 
@@ -15,13 +17,15 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, value))
 
 
-def _size_fit_score(door_count: int) -> float:
-    """100 inside [MIN, MAX], linearly fading to 0 at the falloff boundary on either side."""
-    lo, hi = config.TARGET_DOOR_MIN, config.TARGET_DOOR_MAX
+def _size_fit_score(door_count: int, door_min: int, door_max: int) -> float:
+    """100 inside [door_min, door_max], linearly fading to 0 at the falloff boundary
+    on either side. door_min/door_max are caller-supplied (not read from config
+    directly) so the "what-if" range control can re-score without a config edit."""
+    lo, hi = door_min, door_max
     if lo <= door_count <= hi:
         return 100.0
 
-    width = hi - lo
+    width = max(hi - lo, 1)
     falloff = width * config.SIZE_FALLOFF_RATIO
 
     if door_count < lo:
@@ -53,8 +57,16 @@ def _growth_score(target: Target) -> dict:
     }
 
 
-def compute_score(target: Target, metro_counts: dict[str, int]) -> dict:
-    size_fit = _size_fit_score(target.estimated_door_count)
+def compute_score(
+    target: Target,
+    metro_counts: dict[str, int],
+    door_min: Optional[int] = None,
+    door_max: Optional[int] = None,
+) -> dict:
+    door_min = config.TARGET_DOOR_MIN if door_min is None else door_min
+    door_max = config.TARGET_DOOR_MAX if door_max is None else door_max
+
+    size_fit = _size_fit_score(target.estimated_door_count, door_min, door_max)
     growth = _growth_score(target)
 
     base_score = (
@@ -93,7 +105,7 @@ def compute_score(target: Target, metro_counts: dict[str, int]) -> dict:
             "geo_bonus": round(geo_bonus, 1),
             "geo_bonus_max": config.GEO_BONUS_MAX_POINTS,
             "metro_target_count": this_metro_count,
-            "target_door_range": [config.TARGET_DOOR_MIN, config.TARGET_DOOR_MAX],
+            "target_door_range": [door_min, door_max],
         },
     }
 

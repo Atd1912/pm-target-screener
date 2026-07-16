@@ -1,9 +1,15 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTargets, getStats, updateOutreachStatus } from '../api.js';
+import { getTargets, getStats, getScoringConfig, updateOutreachStatus } from '../api.js';
 import ConfidenceBadge from '../components/ConfidenceBadge.jsx';
 import OutreachSelect from '../components/OutreachSelect.jsx';
 import NaturalLanguageSearch from '../components/NaturalLanguageSearch.jsx';
+import CountUp from '../components/CountUp.jsx';
+import TargetScatterChart from '../components/TargetScatterChart.jsx';
+import DualRangeSlider from '../components/DualRangeSlider.jsx';
+
+const DOOR_SLIDER_BOUNDS = { min: 0, max: 2200, step: 10 };
+const DEBOUNCE_MS = 250;
 
 const OUTREACH_LABELS = {
   not_started: 'Not started',
@@ -13,11 +19,23 @@ const OUTREACH_LABELS = {
   call_booked: 'Call booked',
 };
 
+// Score pills read as flat gold at any value today; scale the wash intensity
+// and weight with the score so a 95 visibly outweighs a 45 at a glance.
+function scorePillStyle(score) {
+  const alpha = 0.08 + Math.min(1, Math.max(0, score / 100)) * 0.34;
+  return {
+    background: `rgba(166, 129, 63, ${alpha.toFixed(2)})`,
+    color: score >= 60 ? 'var(--ink)' : 'var(--ink-muted)',
+    fontWeight: score >= 85 ? 700 : 600,
+  };
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [targets, setTargets] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [initialLoad, setInitialLoad] = useState(true);
   const [errorMsg, setErrorMsg] = useState(null);
 
   const [metro, setMetro] = useState('');
@@ -27,6 +45,11 @@ export default function Dashboard() {
   const [maxScore, setMaxScore] = useState('');
   const [sortBy, setSortBy] = useState('acquisition_fit_score');
   const [sortDir, setSortDir] = useState('desc');
+  const [view, setView] = useState('table');
+
+  const [defaultDoorRange, setDefaultDoorRange] = useState([150, 600]);
+  const [doorRange, setDoorRange] = useState([150, 600]);
+  const [debouncedDoorRange, setDebouncedDoorRange] = useState([150, 600]);
 
   const loadTargets = useCallback(async () => {
     setLoading(true);
@@ -38,6 +61,8 @@ export default function Dashboard() {
         outreach_status: outreachStatus || undefined,
         min_score: minScore || undefined,
         max_score: maxScore || undefined,
+        door_min: debouncedDoorRange[0],
+        door_max: debouncedDoorRange[1],
         sort_by: sortBy,
         sort_dir: sortDir,
       });
@@ -46,12 +71,26 @@ export default function Dashboard() {
       setErrorMsg(err.message);
     } finally {
       setLoading(false);
+      setInitialLoad(false);
     }
-  }, [metro, confidence, outreachStatus, minScore, maxScore, sortBy, sortDir]);
+  }, [metro, confidence, outreachStatus, minScore, maxScore, debouncedDoorRange, sortBy, sortDir]);
 
   useEffect(() => {
     getStats().then(setStats).catch((err) => setErrorMsg(err.message));
+    getScoringConfig()
+      .then((cfg) => {
+        const range = [cfg.target_door_min, cfg.target_door_max];
+        setDefaultDoorRange(range);
+        setDoorRange(range);
+        setDebouncedDoorRange(range);
+      })
+      .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedDoorRange(doorRange), DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [doorRange]);
 
   useEffect(() => {
     loadTargets();
@@ -91,40 +130,71 @@ export default function Dashboard() {
 
   return (
     <>
-      <div className="summary-strip">
-        <h1>
-          {stats ? (
-            <>
-              <em>{stats.total_targets}</em> targets tracked across{' '}
-              <em>{stats.metros.length}</em> metros
-            </>
-          ) : (
-            'Loading targets…'
-          )}
-        </h1>
-        <p className="subline">
-          {stats ? `Average acquisition-fit score: ${stats.average_score}` : ''}
-        </p>
-      </div>
-
-      <hr className="hairline" style={{ margin: '28px 40px', maxWidth: 1180 }} />
-
       {stats && (
         <div className="stat-section">
-          <div className="eyebrow">By confidence tier</div>
+          <div className="eyebrow">
+            By confidence tier
+            {confidence && (
+              <button className="eyebrow-clear" onClick={() => setConfidence('')} type="button">
+                clear
+              </button>
+            )}
+          </div>
           <div className="stat-grid">
             {['verified', 'estimated', 'unverified'].map((tier) => (
-              <div className="stat-card" key={tier}>
+              <button
+                className={`stat-card stat-card-button ${tier} ${confidence === tier ? 'active' : ''}`}
+                key={tier}
+                type="button"
+                aria-pressed={confidence === tier}
+                onClick={() => setConfidence(confidence === tier ? '' : tier)}
+              >
                 <div className="tier-label">
                   <span className={`tier-dot ${tier}`} />
                   {tier[0].toUpperCase() + tier.slice(1)}
                 </div>
-                <div className="stat-number">{stats.by_confidence[tier] || 0}</div>
-              </div>
+                <div className="stat-number">
+                  <CountUp value={stats.by_confidence[tier] || 0} />
+                </div>
+              </button>
             ))}
           </div>
         </div>
       )}
+
+      <div className="whatif-section">
+        <div className="eyebrow">What-if: target door range</div>
+        <div className="whatif-panel">
+          <p className="whatif-desc">
+            Every acquisition-fit score is computed against this range. Drag either
+            handle to see the whole pipeline re-rank in real time.
+          </p>
+          <div className="whatif-control">
+            <DualRangeSlider
+              min={DOOR_SLIDER_BOUNDS.min}
+              max={DOOR_SLIDER_BOUNDS.max}
+              step={DOOR_SLIDER_BOUNDS.step}
+              valueMin={doorRange[0]}
+              valueMax={doorRange[1]}
+              onChange={(lo, hi) => setDoorRange([lo, hi])}
+            />
+            <div className="whatif-values">
+              <span className="whatif-range-text">
+                {doorRange[0].toLocaleString()} – {doorRange[1].toLocaleString()} doors
+              </span>
+              {(doorRange[0] !== defaultDoorRange[0] || doorRange[1] !== defaultDoorRange[1]) && (
+                <button
+                  type="button"
+                  className="whatif-reset"
+                  onClick={() => setDoorRange(defaultDoorRange)}
+                >
+                  Reset to default ({defaultDoorRange[0]}–{defaultDoorRange[1]})
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
 
       <NaturalLanguageSearch />
 
@@ -138,16 +208,6 @@ export default function Dashboard() {
                 {m}
               </option>
             ))}
-          </select>
-        </label>
-
-        <label>
-          Confidence
-          <select value={confidence} onChange={(e) => setConfidence(e.target.value)}>
-            <option value="">All tiers</option>
-            <option value="verified">Verified</option>
-            <option value="estimated">Estimated</option>
-            <option value="unverified">Unverified</option>
           </select>
         </label>
 
@@ -191,19 +251,45 @@ export default function Dashboard() {
         </button>
       </div>
 
-      <p className="result-count">
-        {loading ? 'Loading…' : `${targets.length} target${targets.length === 1 ? '' : 's'}`}
-      </p>
+      <div className="result-row">
+        <p className="result-count">
+          {initialLoad && loading ? (
+            'Loading…'
+          ) : (
+            <>
+              <CountUp value={targets.length} /> target{targets.length === 1 ? '' : 's'}
+            </>
+          )}
+        </p>
+        <div className="view-toggle" role="group" aria-label="Result view">
+          <button
+            type="button"
+            className={view === 'table' ? 'active' : ''}
+            onClick={() => setView('table')}
+          >
+            Table
+          </button>
+          <button
+            type="button"
+            className={view === 'chart' ? 'active' : ''}
+            onClick={() => setView('chart')}
+          >
+            Chart
+          </button>
+        </div>
+      </div>
 
       {errorMsg && <p className="query-error" style={{ padding: '0 40px' }}>{errorMsg}</p>}
 
       <div className="table-panel">
-        {loading ? (
+        {initialLoad && loading ? (
           <div className="loading-state">Loading targets…</div>
         ) : targets.length === 0 ? (
           <div className="empty-state">No targets match these filters.</div>
+        ) : view === 'chart' ? (
+          <TargetScatterChart targets={targets} />
         ) : (
-          <table className="targets-table">
+          <table className={`targets-table ${loading ? 'is-refreshing' : ''}`}>
             <thead>
               <tr>
                 <th className={sortBy === 'company_name' ? 'active' : ''} onClick={() => handleSort('company_name')}>
@@ -239,7 +325,9 @@ export default function Dashboard() {
                   <td>{t.google_rating.toFixed(1)}</td>
                   <td>{t.years_in_business}</td>
                   <td>
-                    <span className="score-pill">{t.acquisition_fit_score}</span>
+                    <span className="score-pill" style={scorePillStyle(t.acquisition_fit_score)}>
+                      {t.acquisition_fit_score}
+                    </span>
                   </td>
                   <td>
                     <OutreachSelect
